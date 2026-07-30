@@ -373,27 +373,30 @@
 
     // 승인 함수: 내 DB에서 삭제 후 -> 친구 DB의 'posts' 컬렉션에 이관
     async function approveAndTransfer(myPostId, postData) {
-
       try {
-        // 친구 DB에 저장될 데이터 구조 조정 (status를 approved로 변경)
+        // 1. 전송할 데이터 안전하게 구성 (undefined 방지 및 author 변경)
         const approvedPost = {
-          ...postData,
-          author: "관리자",
-          status: "approved"
+          uid: postData.uid || "",
+          author: "관리자", //  작성자를 '관리자'로 변경
+          authEmail: postData.authEmail || "",
+          title: postData.title || "",
+          body: postData.body || "",
+          category: postData.category || "기타",
+          status: "approved",
+          createdAt: Date.now() //  Realtime DB용 숫자 타임스탬프
         };
-        delete approvedPost.createdAt; // Timestamp 호환을 위해 재설정
-        approvedPost.createdAt = serverTimestamp();
-
-        // 1. 친구 DB로 Post 작성
-        await addDoc(collection(friendDb, "posts"), approvedPost);
-
-        // 2. 내 DB에서 대기글 삭제
+      
+        // 2. 친구 Realtime DB의 'posts' 경로로 전송
+        const friendPostsRef = ref(friendRealtimeDb, 'posts');
+        await push(friendPostsRef, approvedPost);
+      
+        // 3. 내 Firestore DB의 대기 목록에서 삭제
         await deleteDoc(doc(myDb, "pending_posts", myPostId));
-
-        alert("Main DB로 승인/게시 완료되었습니다!");
+      
+        alert("성공적으로 승인되어 게시되었습니다!");
       } catch (error) {
-        console.error("이관 실패:", error);
-        alert("이관 실패! Main DB 승인 권한이나 필드 규칙을 확인하세요.");
+        console.error("이관 실패 상세 원인:", error);
+        alert(`승인 이관 중 오류 발생: ${error.message}`);
       }
     }
 
