@@ -115,6 +115,9 @@
     const friendRealtimeDb = getDatabase(friendApp);
 
     const postsRef = ref(friendRealtimeDb, 'posts');
+    const categoriesRef = ref(friendRealtimeDb, 'categories'); // 안드로이드 앱과 공유하는 카테고리 목록
+
+    let categoriesList = []; // Firebase에서 불러온 카테고리 캐시 (중복 추가 방지용)
 
     // Firebase 앱 & DB 초기화
     const myApp = initializeApp(myFirebaseConfig, "myApp");
@@ -275,6 +278,52 @@
       }
     }
 
+    // -------------------------------------------------------------
+    // Firebase 'categories' 노드를 실시간으로 읽어와 select 옵션 구성
+    // (안드로이드 앱과 동일한 categories 노드를 공유)
+    // -------------------------------------------------------------
+    onValue(categoriesRef, (snapshot) => {
+      const tempSelected = categorySelect.value; // 선택 상태 유지 시도
+
+      categoriesList = [];
+      const data = snapshot.val();
+      if (data) {
+        Object.keys(data).forEach((key) => {
+          const cat = data[key];
+          if (cat && !categoriesList.includes(cat)) {
+            categoriesList.push(cat);
+          }
+        });
+      }
+
+      // select 옵션 다시 구성
+      categorySelect.innerHTML = '';
+      categoriesList.forEach((cat) => {
+        const opt = document.createElement('option');
+        opt.value = cat;
+        opt.textContent = cat;
+        categorySelect.appendChild(opt);
+      });
+
+      // '직접 입력' 옵션은 항상 마지막에 추가
+      const directOpt = document.createElement('option');
+      directOpt.value = 'direct';
+      directOpt.textContent = '직접 입력';
+      categorySelect.appendChild(directOpt);
+
+      // 이전 선택값 복원 (여전히 목록에 있으면 유지, 없으면 첫 항목)
+      if (tempSelected === 'direct' || categoriesList.includes(tempSelected)) {
+        categorySelect.value = tempSelected;
+      } else if (categoriesList.length > 0) {
+        categorySelect.value = categoriesList[0];
+      }
+
+      // '직접 입력'이 선택된 상태가 아니면 커스텀 입력창은 숨김 유지
+      if (categorySelect.value !== 'direct') {
+        customCategoryInput.style.display = 'none';
+      }
+    });
+
     categorySelect.addEventListener('change', (e) => {
       if (e.target.value === 'direct') {
         customCategoryInput.style.display = 'block';
@@ -329,8 +378,10 @@
 
       //  최종 카테고리 값 구하기
       let finalCategory = categorySelect.value;
+      let isCustomCategory = false;
       if (finalCategory === 'direct') {
         finalCategory = customCategoryInput.value.trim();
+        isCustomCategory = true;
       }
 
       if (!finalCategory) {
@@ -359,13 +410,26 @@
 
       try {
         await addDoc(collection(myDb, "pending_posts"), postData);
+
+        // 직접 입력한 카테고리가 기존 목록에 없으면 Firebase categories 노드에 추가
+        // (안드로이드 앱 필터 스피너에도 동일하게 반영됨)
+        if (isCustomCategory && !categoriesList.includes(finalCategory)) {
+          try {
+            await push(categoriesRef, finalCategory);
+          } catch (catError) {
+            console.error("카테고리 추가 실패:", catError);
+          }
+        }
+
         alert("내 DB에 승인 대기글로 등록되었습니다!");
 
         // 입력 폼 초기화
         titleInput.value = '';
         bodyInput.value = '';
         customCategoryInput.value = '';
-        categorySelect.value = '키오스크';
+        if (categorySelect.options.length > 0) {
+          categorySelect.selectedIndex = 0;
+        }
         customCategoryInput.style.display = 'none';
       } catch (error) {
         console.error("글 저장 실패:", error);
