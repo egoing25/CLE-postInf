@@ -63,6 +63,11 @@
     <div id="publishedPosts">로딩 중...</div>
   </section>
 
+  <section id="returnedSection" style="display: none; background-color: #fff8e1;">
+    <h2>반환된 글 (수정 후 재제출)</h2>
+    <div id="returnedPosts">로딩 중...</div>
+  </section>
+
     <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 
@@ -80,7 +85,9 @@
       deleteDoc, 
       doc, 
       onSnapshot, 
-      serverTimestamp 
+      serverTimestamp,
+      query,
+      where
     } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
     // 4. Realtime Database (친구 DB - 안드로이드 앱 글 수신용)
     import { 
@@ -145,6 +152,8 @@
 
     const pendingPostsDiv = document.getElementById('pendingPosts');
     const publishedPostsDiv = document.getElementById('publishedPosts');
+    const returnedSection = document.getElementById('returnedSection');
+    const returnedPostsDiv = document.getElementById('returnedPosts');
 
     const categorySelect = document.getElementById('categorySelect');
     const customCategoryInput = document.getElementById('customCategoryInput');
@@ -154,24 +163,23 @@
     const adminSection = document.getElementById('adminSection');
 
     let unsubscribePendingPosts = null; // 대기글 리스너 해제용 변수
+    let unsubscribeReturnedPosts = null; // 반환글 리스너 해제용 변수
 
     // -------------------------------------------------------------
-    // 본문(textarea)에서 Enter 입력 시 커서 위치에 확실히 \n 삽입
+    // textarea에서 Enter 입력 시 커서 위치에 확실히 \n 삽입 (공용 헬퍼)
     // -------------------------------------------------------------
-    bodyInput.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        e.preventDefault(); // 기본 동작을 막고 직접 \n을 삽입해 동작을 명확히 보장
-
-        const start = this.selectionStart;
-        const end = this.selectionEnd;
-        const value = this.value;
-
-        this.value = value.substring(0, start) + '\n' + value.substring(end);
-
-        // 커서를 방금 삽입한 줄바꿈 다음 위치로 이동
-        this.selectionStart = this.selectionEnd = start + 1;
-      }
-    });
+    function enableEnterNewline(textareaEl) {
+      textareaEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const start = this.selectionStart;
+          const end = this.selectionEnd;
+          const value = this.value;
+          this.value = value.substring(0, start) + '\n' + value.substring(end);
+          this.selectionStart = this.selectionEnd = start + 1;
+        }
+      });
+    }
 
     // -------------------------------------------------------------
     // 저장된 \n 이 화면에도 줄바꿈으로 보이도록 변환 (+ XSS 방지용 이스케이프)
@@ -188,6 +196,8 @@
     function formatBody(str) {
       return escapeHtml(str).replace(/\n/g, '<br>');
     }
+
+    enableEnterNewline(bodyInput);
 
 // -------------------------------------------------------------
 // 로그인 상태 변화 감지
@@ -210,13 +220,19 @@
           if (unsubscribePendingPosts) unsubscribePendingPosts(); // 대기글 수신 중단
         }
 
+        // 로그인한 사용자 본인에게 반환된 글 수신 시작 (관리자 포함 누구나)
+        returnedSection.style.display = 'block';
+        listenToReturnedPosts(user.uid);
+
       } else {
         currentUser = null;
         loginArea.style.display = 'block';
         userProfile.style.display = 'none';
         writeSection.style.display = 'none';
         adminSection.style.display = 'none'; // 로그아웃 시 관리자 UI 숨기기
+        returnedSection.style.display = 'none';
         if (unsubscribePendingPosts) unsubscribePendingPosts();
+        if (unsubscribeReturnedPosts) unsubscribeReturnedPosts();
       }
     });
 
@@ -249,6 +265,9 @@
               <button class="approve-btn" style="background-color: #e8f5e9; border: 1px solid #81c784; color: #2e7d32;">
                 [승인하여 Main DB로 전송]
               </button>
+              <button class="return-btn" style="background-color: #e3f2fd; border: 1px solid #64b5f6; color: #1565c0; margin-left: 8px;">
+                [반환 (코멘트와 함께 돌려주기)]
+              </button>
               <button class="reject-btn" style="background-color: #ffebee; border: 1px solid #e57373; color: #c62828; margin-left: 8px;">
                 [거절 (대기 명단에서 삭제)]
               </button>
@@ -257,6 +276,11 @@
 
           card.querySelector('.approve-btn').addEventListener('click', async () => {
             await approveAndTransfer(postId, post);
+          });
+          card.querySelector('.return-btn').addEventListener('click', async () => {
+            const comment = prompt(`'${post.title}' 글을 작성자에게 반환합니다.\n작성자에게 남길 코멘트를 입력해주세요:`);
+            if (comment === null) return; // 취소 누름
+            await returnPostToUser(postId, post, comment.trim());
           });
           card.querySelector('.reject-btn').addEventListener('click', async () => {
             if (confirm(`'${post.title}' 글을 대기 목록에서 삭제하시겠습니까?`)) {
@@ -276,6 +300,119 @@
         console.error("거절/삭제 실패:", error);
         alert("삭제 중 오류가 발생했습니다.");
       }
+    }
+
+    // -------------------------------------------------------------
+    // [관리자 전용] 코멘트와 함께 작성자에게 글 반환
+    // 내 DB의 pending_posts -> returned_posts 로 이동 (uid로 작성자 구분)
+    // -------------------------------------------------------------
+    async function returnPostToUser(myPostId, postData, comment) {
+      try {
+        await addDoc(collection(myDb, "returned_posts"), {
+          uid: postData.uid || "",
+          author: postData.author || "",
+          authEmail: postData.authEmail || "",
+          title: postData.title || "",
+          body: postData.body || "",
+          category: postData.category || "",
+          adminComment: comment || "",
+          returnedAt: serverTimestamp()
+        });
+
+        await deleteDoc(doc(myDb, "pending_posts", myPostId));
+        alert("작성자에게 반환되었습니다.");
+      } catch (error) {
+        console.error("반환 실패:", error);
+        alert("반환 중 오류가 발생했습니다.");
+      }
+    }
+
+    // -------------------------------------------------------------
+    // [본인 전용] 반환된 글 목록 조회 + 수정 후 재제출
+    // -------------------------------------------------------------
+    function listenToReturnedPosts(uid) {
+      if (unsubscribeReturnedPosts) unsubscribeReturnedPosts();
+
+      const returnedQuery = query(collection(myDb, "returned_posts"), where("uid", "==", uid));
+
+      unsubscribeReturnedPosts = onSnapshot(returnedQuery, (snapshot) => {
+        returnedPostsDiv.innerHTML = '';
+        if (snapshot.empty) {
+          returnedPostsDiv.innerHTML = '<p>반환된 글이 없습니다.</p>';
+          return;
+        }
+
+        snapshot.forEach((docSnap) => {
+          const post = docSnap.data();
+          const postId = docSnap.id;
+
+          const card = document.createElement('div');
+          card.className = 'post-card';
+          card.innerHTML = `
+            <div style="background:#fff3e0; padding:8px; border-radius:4px; margin-bottom:10px;">
+              <strong>관리자 코멘트:</strong> ${escapeHtml(post.adminComment || '(코멘트 없음)')}
+            </div>
+            <label>카테고리</label>
+            <input type="text" class="return-category-input" value="${escapeHtml(post.category || '')}">
+            <label>제목</label>
+            <input type="text" class="return-title-input" value="${escapeHtml(post.title || '')}">
+            <label>본문</label>
+            <textarea class="return-body-input" rows="4">${escapeHtml(post.body || '')}</textarea>
+            <button class="resubmit-btn" style="background-color:#e8f5e9; border:1px solid #81c784; color:#2e7d32;">
+              [수정 완료 - 다시 제출]
+            </button>
+          `;
+
+          const categoryInputEl = card.querySelector('.return-category-input');
+          const titleInputEl = card.querySelector('.return-title-input');
+          const bodyInputEl = card.querySelector('.return-body-input');
+
+          enableEnterNewline(bodyInputEl);
+
+          card.querySelector('.resubmit-btn').addEventListener('click', async () => {
+            const newCategory = categoryInputEl.value.trim();
+            const newTitle = titleInputEl.value.trim();
+            const newBody = bodyInputEl.value.trim();
+
+            if (!newCategory || !newTitle || !newBody) {
+              alert("카테고리, 제목, 내용을 모두 입력해주세요.");
+              return;
+            }
+
+            try {
+              await addDoc(collection(myDb, "pending_posts"), {
+                uid: post.uid || "",
+                author: post.author || "",
+                authEmail: post.authEmail || "",
+                title: newTitle,
+                body: newBody,
+                category: newCategory,
+                status: "pending",
+                starCount: 0,
+                stars: {},
+                createdAt: serverTimestamp()
+              });
+
+              // 새 카테고리라면 Firebase categories 노드에도 추가
+              if (newCategory && !categoriesList.includes(newCategory)) {
+                try {
+                  await push(categoriesRef, newCategory);
+                } catch (catError) {
+                  console.error("카테고리 추가 실패:", catError);
+                }
+              }
+
+              await deleteDoc(doc(myDb, "returned_posts", postId));
+              alert("수정한 글이 다시 승인 대기 목록으로 제출되었습니다!");
+            } catch (error) {
+              console.error("재제출 실패:", error);
+              alert("재제출 중 오류가 발생했습니다.");
+            }
+          });
+
+          returnedPostsDiv.appendChild(card);
+        });
+      });
     }
 
     // -------------------------------------------------------------
@@ -347,23 +484,6 @@
     });
 
     logoutBtn.addEventListener('click', () => signOut(auth));
-
-    // 로그인 상태 변화 감지
-    onAuthStateChanged(auth, (user) => {
-      if (user) {
-        currentUser = user;
-        userNameSpan.textContent = user.displayName || "이름없음";
-        userEmailSpan.textContent = user.email || "";
-        loginArea.style.display = 'none';
-        userProfile.style.display = 'block';
-        writeSection.style.display = 'block';
-      } else {
-        currentUser = null;
-        loginArea.style.display = 'block';
-        userProfile.style.display = 'none';
-        writeSection.style.display = 'none';
-      }
-    });
 
 
     //  Post 작성 (내 DB의 'pending_posts' 컬렉션에 저장)
@@ -438,36 +558,9 @@
 
 
     // -------------------------------------------------------------
-    // 4. [내 DB] 대기 중인 Post 목록 조회 및 승인 처리
+    // 4. [내 DB] 대기 중인 Post 목록 조회 및 승인/반환/거절 처리
+    //    (실제 조회/렌더링은 관리자 로그인 시 listenToPendingPosts()에서 수행)
     // -------------------------------------------------------------
-    onSnapshot(collection(myDb, "pending_posts"), (snapshot) => {
-      pendingPostsDiv.innerHTML = '';
-      if (snapshot.empty) {
-        pendingPostsDiv.innerHTML = '<p>대기 중인 Post가 없습니다.</p>';
-        return;
-      }
-
-      snapshot.forEach((docSnap) => {
-        const post = docSnap.data();
-        const postId = docSnap.id;
-
-        const card = document.createElement('div');
-        card.className = 'post-card';
-        card.innerHTML = `
-          <span class="badge">[${escapeHtml(post.category)}]</span> <strong>${escapeHtml(post.title)}</strong>
-          <div class="author-info">작성자: ${escapeHtml(post.author)} (${escapeHtml(post.authEmail)})</div>
-          <p>${formatBody(post.body)}</p>
-          <button class="approve-btn" data-id="${postId}">[승인하여 Main DB로 전송]</button>
-        `;
-
-        // 버튼 클릭에 전체 Post 데이터 전달을 위해 데이터 보관
-        card.querySelector('.approve-btn').addEventListener('click', async () => {
-          await approveAndTransfer(postId, post);
-        });
-
-        pendingPostsDiv.appendChild(card);
-      });
-    });
 
     // 승인 함수: 내 DB에서 삭제 후 -> 친구 DB의 'posts' 컬렉션에 이관
     async function approveAndTransfer(myPostId, postData) {
