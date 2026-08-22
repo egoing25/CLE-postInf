@@ -152,6 +152,39 @@
 
     let unsubscribePendingPosts = null; // 대기글 리스너 해제용 변수
 
+    // -------------------------------------------------------------
+    // 본문(textarea)에서 Enter 입력 시 커서 위치에 확실히 \n 삽입
+    // -------------------------------------------------------------
+    bodyInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault(); // 기본 동작을 막고 직접 \n을 삽입해 동작을 명확히 보장
+
+        const start = this.selectionStart;
+        const end = this.selectionEnd;
+        const value = this.value;
+
+        this.value = value.substring(0, start) + '\n' + value.substring(end);
+
+        // 커서를 방금 삽입한 줄바꿈 다음 위치로 이동
+        this.selectionStart = this.selectionEnd = start + 1;
+      }
+    });
+
+    // -------------------------------------------------------------
+    // 저장된 \n 이 화면에도 줄바꿈으로 보이도록 변환 (+ XSS 방지용 이스케이프)
+    // -------------------------------------------------------------
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatBody(str) {
+      return escapeHtml(str).replace(/\n/g, '<br>');
+    }
 
 // -------------------------------------------------------------
 // 로그인 상태 변화 감지
@@ -206,9 +239,9 @@
           const card = document.createElement('div');
           card.className = 'post-card';
           card.innerHTML = `
-            <span class="badge">[${post.category}]</span> <strong>${post.title}</strong>
-            <div class="author-info">작성자: ${post.author} (${post.authEmail})</div>
-            <p>${post.body}</p>
+            <span class="badge">[${escapeHtml(post.category)}]</span> <strong>${escapeHtml(post.title)}</strong>
+            <div class="author-info">작성자: ${escapeHtml(post.author)} (${escapeHtml(post.authEmail)})</div>
+            <p>${formatBody(post.body)}</p>
             <div style="margin-top: 10px;">
               <button class="approve-btn" style="background-color: #e8f5e9; border: 1px solid #81c784; color: #2e7d32;">
                 [승인하여 Main DB로 전송]
@@ -357,9 +390,9 @@
         const card = document.createElement('div');
         card.className = 'post-card';
         card.innerHTML = `
-          <span class="badge">[${post.category}]</span> <strong>${post.title}</strong>
-          <div class="author-info">작성자: ${post.author} (${post.authEmail})</div>
-          <p>${post.body}</p>
+          <span class="badge">[${escapeHtml(post.category)}]</span> <strong>${escapeHtml(post.title)}</strong>
+          <div class="author-info">작성자: ${escapeHtml(post.author)} (${escapeHtml(post.authEmail)})</div>
+          <p>${formatBody(post.body)}</p>
           <button class="approve-btn" data-id="${postId}">[승인하여 Main DB로 전송]</button>
         `;
 
@@ -420,9 +453,9 @@
 
         publishedPostsDiv.innerHTML += `
           <div class="post-card">
-            <span class="badge">[${post.category || '기타'}]</span> <strong>${post.title || '제목 없음'}</strong>
-            <div class="author-info">작성자: ${post.author || '익명'}</div>
-            <p>${post.body || ''}</p>
+            <span class="badge">[${escapeHtml(post.category || '기타')}]</span> <strong>${escapeHtml(post.title || '제목 없음')}</strong>
+            <div class="author-info">작성자: ${escapeHtml(post.author || '익명')}</div>
+            <p>${formatBody(post.body || '')}</p>
           </div>
         `;
       });
