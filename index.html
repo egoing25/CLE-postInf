@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>일해라</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.11/purify.min.js"></script>
   <style>
     body { font-family: sans-serif; max-width: 650px; margin: 20px auto; padding: 0 15px;background-color: rgb(30, 29, 29);}
     section {background-color: rgb(252, 249, 249); border: 1px solid #ccc; padding: 18px; border-radius: 8px; margin-bottom: 20px; }
@@ -13,6 +14,11 @@
     .badge { background: #ffeb3b; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
     .author-info { font-size: 13px; color: #666; margin-top: 2px; margin-bottom: 10px; }
     #userProfile { background: #e3f2fd; padding: 10px; border-radius: 6px; margin-bottom: 15px; display: none; }
+
+    /* contenteditable 본문 영역 안의 이미지 스타일 */
+    [contenteditable="true"] img { max-width: 100%; height: auto; display: block; margin: 6px 0; border-radius: 6px; }
+    .content-editable-body { min-height: 120px; border: 1px solid #ccc; border-radius: 4px; padding: 10px; margin-bottom: 12px; background: #fff; }
+    .insert-image-btn { margin-bottom: 12px; background: #eee; }
   </style>
 </head>
 <body>
@@ -50,7 +56,10 @@
     <input type="text" id="titleInput" placeholder="제목을 입력하세요">
 
     <label>본문</label>
-    <textarea id="bodyInput" rows="4" placeholder="내용을 입력하세요"></textarea>
+    <div id="bodyInput" class="content-editable-body" contenteditable="true"></div>
+
+    <input type="file" id="imageFileInput" accept="image/*" style="display:none;">
+    <button type="button" id="insertImageBtn" class="insert-image-btn">🖼️ 이미지 추가</button>
 
     <button id="submitBtn">작성 완료 (검증 요청)</button>
   </section>
@@ -99,6 +108,14 @@
       push, 
       remove 
     } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+    // 5. Storage (이미지 업로드 - 안드로이드 앱이 최종적으로 읽는 friendApp 쪽에 업로드)
+    import {
+      getStorage,
+      ref as storageRef,
+      uploadBytes,
+      getDownloadURL
+    } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
+
     // Firebase 프로젝트 설정
     const myFirebaseConfig = {
         apiKey: "AIzaSyBxN9gTuUPZRmeE-PARNR8zDouqVkDuOPk",
@@ -122,6 +139,7 @@
     };
     const friendApp = initializeApp(friendFirebaseConfig, "friendApp");
     const friendRealtimeDb = getDatabase(friendApp);
+    const friendStorage = getStorage(friendApp); // 이미지 업로드용 Storage (안드로이드 앱과 동일한 버킷)
 
     const postsRef = ref(friendRealtimeDb, 'posts');
     const categoriesRef = ref(friendRealtimeDb, 'categories'); // 안드로이드 앱과 공유하는 카테고리 목록
@@ -149,8 +167,11 @@
 
     const categoryInput = document.getElementById('categoryInput');
     const titleInput = document.getElementById('titleInput');
-    const bodyInput = document.getElementById('bodyInput');
+    const bodyInputDiv = document.getElementById('bodyInput'); // contenteditable div (구 textarea)
     const submitBtn = document.getElementById('submitBtn');
+
+    const imageFileInput = document.getElementById('imageFileInput');
+    const insertImageBtn = document.getElementById('insertImageBtn');
 
     const pendingPostsDiv = document.getElementById('pendingPosts');
     const publishedPostsDiv = document.getElementById('publishedPosts');
@@ -168,22 +189,6 @@
     let unsubscribeReturnedPosts = null; // 반환글 리스너 해제용 변수
 
     // -------------------------------------------------------------
-    // textarea에서 Enter 입력 시 커서 위치에 확실히 \n 삽입 (공용 헬퍼)
-    // -------------------------------------------------------------
-    function enableEnterNewline(textareaEl) {
-      textareaEl.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          const start = this.selectionStart;
-          const end = this.selectionEnd;
-          const value = this.value;
-          this.value = value.substring(0, start) + '\n' + value.substring(end);
-          this.selectionStart = this.selectionEnd = start + 1;
-        }
-      });
-    }
-
-    // -------------------------------------------------------------
     // 저장된 \n 이 화면에도 줄바꿈으로 보이도록 변환 (+ XSS 방지용 이스케이프)
     // -------------------------------------------------------------
     function escapeHtml(str) {
@@ -195,11 +200,64 @@
         .replace(/'/g, '&#39;');
     }
 
+    // 이미 HTML 태그(예: <img>, <div>, <br>)가 포함된 본문(신규 작성분)은 DOMPurify로
+    // 살균 후 그대로 렌더링하고, 순수 텍스트(과거 데이터 호환용)는 기존처럼 escape 처리
     function formatBody(str) {
+      if (!str) return '';
+      if (/<[a-z][\s\S]*>/i.test(str)) {
+        return DOMPurify.sanitize(str);
+      }
       return escapeHtml(str).replace(/\n/g, '<br>');
     }
 
-    enableEnterNewline(bodyInput);
+    // 특정 contenteditable div에 이미지 업로드 + 삽입 기능을 연결하는 공용 헬퍼
+    // (작성 화면 + 반환된 글 재수정 화면에서 공통으로 사용)
+    function setupImageInsertion(triggerBtn, fileInputEl, targetDiv) {
+      triggerBtn.addEventListener('click', () => {
+        fileInputEl.click();
+      });
+
+      fileInputEl.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        triggerBtn.disabled = true;
+        const originalLabel = triggerBtn.textContent;
+        triggerBtn.textContent = '업로드 중...';
+
+        try {
+          const fileName = `post_images/${Date.now()}_${file.name}`;
+          const fileRef = storageRef(friendStorage, fileName);
+          await uploadBytes(fileRef, file);
+          const url = await getDownloadURL(fileRef);
+
+          const img = document.createElement('img');
+          img.src = url;
+
+          // 커서 위치에 삽입 (없으면 맨 끝에 추가)
+          const selection = window.getSelection();
+          if (selection.rangeCount > 0 && targetDiv.contains(selection.anchorNode)) {
+            const range = selection.getRangeAt(0);
+            range.deleteContents();
+            range.insertNode(img);
+            range.collapse(false);
+          } else {
+            targetDiv.appendChild(img);
+          }
+          targetDiv.appendChild(document.createElement('br'));
+        } catch (error) {
+          console.error('이미지 업로드 실패:', error);
+          alert('이미지 업로드 중 오류가 발생했습니다.');
+        } finally {
+          triggerBtn.disabled = false;
+          triggerBtn.textContent = originalLabel;
+          fileInputEl.value = ''; // 같은 파일 다시 선택 가능하게 초기화
+        }
+      });
+    }
+
+    // 작성 화면 이미지 삽입 연결
+    setupImageInsertion(insertImageBtn, imageFileInput, bodyInputDiv);
 
 // -------------------------------------------------------------
 // 로그인 상태 변화 감지
@@ -262,7 +320,7 @@
           card.innerHTML = `
             <span class="badge">[${escapeHtml(post.category)}]</span> <strong>${escapeHtml(post.title)}</strong>
             <div class="author-info">작성자: ${escapeHtml(post.author)} (${escapeHtml(post.authEmail)})</div>
-            <p>${formatBody(post.body)}</p>
+            <div>${formatBody(post.body)}</div>
             <div style="margin-top: 10px;">
               <button class="approve-btn" style="background-color: #e8f5e9; border: 1px solid #81c784; color: #2e7d32;">
                 [승인하여 Main DB로 전송]
@@ -359,7 +417,9 @@
             <label>제목</label>
             <input type="text" class="return-title-input" value="${escapeHtml(post.title || '')}">
             <label>본문</label>
-            <textarea class="return-body-input" rows="4">${escapeHtml(post.body || '')}</textarea>
+            <div class="return-body-input content-editable-body" contenteditable="true">${formatBody(post.body || '')}</div>
+            <input type="file" class="return-image-file-input" accept="image/*" style="display:none;">
+            <button type="button" class="return-insert-image-btn insert-image-btn">🖼️ 이미지 추가</button>
             <button class="resubmit-btn" style="background-color:#e8f5e9; border:1px solid #81c784; color:#2e7d32;">
               [수정 완료 - 다시 제출]
             </button>
@@ -368,18 +428,22 @@
           const categoryInputEl = card.querySelector('.return-category-input');
           const titleInputEl = card.querySelector('.return-title-input');
           const bodyInputEl = card.querySelector('.return-body-input');
+          const returnImageFileInput = card.querySelector('.return-image-file-input');
+          const returnInsertImageBtn = card.querySelector('.return-insert-image-btn');
 
-          enableEnterNewline(bodyInputEl);
+          setupImageInsertion(returnInsertImageBtn, returnImageFileInput, bodyInputEl);
 
           card.querySelector('.resubmit-btn').addEventListener('click', async () => {
             const newCategory = categoryInputEl.value.trim();
             const newTitle = titleInputEl.value.trim();
-            const newBody = bodyInputEl.value.trim();
+            const newBodyText = bodyInputEl.innerText.trim();
 
-            if (!newCategory || !newTitle || !newBody) {
+            if (!newCategory || !newTitle || (!newBodyText && !bodyInputEl.querySelector('img'))) {
               alert("카테고리, 제목, 내용을 모두 입력해주세요.");
               return;
             }
+
+            const newBody = DOMPurify.sanitize(bodyInputEl.innerHTML.trim());
 
             try {
               await addDoc(collection(myDb, "pending_posts"), {
@@ -496,7 +560,15 @@
       }
 
       const title = titleInput.value.trim();
-      const body = bodyInput.value.trim();
+
+      // contenteditable은 빈 상태에서도 <br> 같은 게 남을 수 있어서 innerText로 실제 내용 여부 체크
+      const bodyText = bodyInputDiv.innerText.trim();
+      if (!bodyText && !bodyInputDiv.querySelector('img')) {
+        alert("내용을 입력해주세요.");
+        return;
+      }
+      // 저장 전 DOMPurify로 살균 (XSS 방지)
+      const body = DOMPurify.sanitize(bodyInputDiv.innerHTML.trim());
 
       //  최종 카테고리 값 구하기
       let finalCategory = categorySelect.value;
@@ -511,8 +583,8 @@
         return;
       }
 
-      if (!title || !body) {
-        alert("제목과 내용을 입력해주세요.");
+      if (!title) {
+        alert("제목을 입력해주세요.");
         return;
       }
 
@@ -547,7 +619,7 @@
 
         // 입력 폼 초기화
         titleInput.value = '';
-        bodyInput.value = '';
+        bodyInputDiv.innerHTML = '';
         customCategoryInput.value = '';
         if (categorySelect.options.length > 0) {
           categorySelect.selectedIndex = 0;
@@ -614,7 +686,7 @@
           <div class="post-card">
             <span class="badge">[${escapeHtml(post.category || '기타')}]</span> <strong>${escapeHtml(post.title || '제목 없음')}</strong>
             <div class="author-info">작성자: ${escapeHtml(post.author || '익명')}</div>
-            <p>${formatBody(post.body || '')}</p>
+            <div>${formatBody(post.body || '')}</div>
           </div>
         `;
       });
