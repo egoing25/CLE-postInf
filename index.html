@@ -86,6 +86,7 @@
       getAuth, 
       GoogleAuthProvider, 
       signInWithPopup, 
+      signInAnonymously,
       signOut, 
       onAuthStateChanged 
     } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
@@ -142,8 +143,8 @@
     const friendStorage = getStorage(friendApp); // 이미지 업로드용 Storage (안드로이드 앱과 동일한 버킷)
 
     // friendApp(tlqkfzz)은 myApp과 별개 프로젝트라 구글 로그인 세션이 공유되지 않음.
-    // 로그인 버튼을 누르면 myApp 로그인에 이어 friendApp에도 구글 로그인을 한 번 더 띄워서
-    // Storage 규칙이 request.auth != null 을 요구해도 통과하도록 한다.
+    // Storage 규칙이 request.auth != null 을 요구하므로, 팝업을 한 번 더 띄우는 대신
+    // friendApp 쪽은 익명 로그인으로 인증만 확보한다.
     const friendAuth = getAuth(friendApp);
 
     const postsRef = ref(friendRealtimeDb, 'posts');
@@ -268,7 +269,7 @@
         triggerBtn.textContent = '이미지 처리 중...';
 
         try {
-          // friendApp 쪽 구글 로그인이 안 되어 있으면 업로드가 거부되므로 미리 확인
+          // friendApp 쪽 로그인(익명 포함)이 안 되어 있으면 업로드가 거부되므로 미리 확인
           if (!friendAuth.currentUser) {
             alert('이미지 업로드 인증이 완료되지 않았습니다. 로그아웃 후 다시 로그인해주세요.');
             return;
@@ -614,7 +615,6 @@
 
     // 구글 로그인 / 로그아웃 처리
     const provider = new GoogleAuthProvider();
-    const friendProvider = new GoogleAuthProvider();
 
     googleLoginBtn.addEventListener('click', async () => {
       try {
@@ -625,13 +625,12 @@
         return;
       }
 
-      // 이미지 업로드(friendStorage)를 위해 friendApp에도 구글 로그인 한 번 더 요청
-      alert("이미지 업로드를 위해 한 번 더 로그인해주세요.");
+      // 이미지 업로드(friendStorage)를 위해 friendApp 쪽은 별도 팝업 없이 익명 로그인으로 인증만 확보
       try {
-        await signInWithPopup(friendAuth, friendProvider);
+        await signInAnonymously(friendAuth);
       } catch (friendError) {
-        console.error("이미지 업로드용(friendApp) 로그인 실패:", friendError);
-        alert("이미지 업로드용 추가 로그인에 실패했습니다. 글 작성은 가능하지만 이미지 첨부는 안 될 수 있어요. 다시 로그인해 보세요.");
+        console.error("이미지 업로드용(friendApp) 익명 로그인 실패:", friendError);
+        alert("이미지 업로드용 인증에 실패했습니다. 글 작성은 가능하지만 이미지 첨부는 안 될 수 있어요. 다시 로그인해 보세요.");
       }
     });
 
