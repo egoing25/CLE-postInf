@@ -133,7 +133,7 @@
       authDomain: "tlqkfzz.firebaseapp.com",
       databaseURL: "https://tlqkfzz-default-rtdb.firebaseio.com",
       projectId: "tlqkfzz",
-      storageBucket: "tlqkfzz.appspot.com",
+      storageBucket: "tlqkfzz.firebasestorage.app",
       messagingSenderId: "84615874589",
       appId: "1:84615874589:android:a6adda0376e3a83b145ef4"
     };
@@ -248,7 +248,8 @@
 
     // 특정 contenteditable div에 이미지 업로드 + 삽입 기능을 연결하는 공용 헬퍼
     // (작성 화면 + 반환된 글 재수정 화면에서 공통으로 사용)
-    function setupImageInsertion(triggerBtn, fileInputEl, targetDiv) {
+    // storageInstance: 업로드 대상 Storage 인스턴스 (여기서는 항상 friendStorage 사용).
+    function setupImageInsertion(triggerBtn, fileInputEl, targetDiv, storageInstance) {
       triggerBtn.addEventListener('click', () => {
         fileInputEl.click();
       });
@@ -273,7 +274,7 @@
           }
 
           const fileName = `post_images/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${fileExt}`;
-          const fileRef = storageRef(friendStorage, fileName);
+          const fileRef = storageRef(storageInstance, fileName);
           const uploadTask = uploadBytesResumable(fileRef, uploadBlob, { contentType });
 
           const url = await new Promise((resolve, reject) => {
@@ -320,7 +321,7 @@
     }
 
     // 작성 화면 이미지 삽입 연결
-    setupImageInsertion(insertImageBtn, imageFileInput, bodyInputDiv);
+    setupImageInsertion(insertImageBtn, imageFileInput, bodyInputDiv, friendStorage);
 
 // -------------------------------------------------------------
 // 로그인 상태 변화 감지
@@ -494,7 +495,7 @@
           const returnImageFileInput = card.querySelector('.return-image-file-input');
           const returnInsertImageBtn = card.querySelector('.return-insert-image-btn');
 
-          setupImageInsertion(returnInsertImageBtn, returnImageFileInput, bodyInputEl);
+          setupImageInsertion(returnInsertImageBtn, returnImageFileInput, bodyInputEl, friendStorage);
 
           card.querySelector('.resubmit-btn').addEventListener('click', async () => {
             const newCategory = categoryInputEl.value.trim();
