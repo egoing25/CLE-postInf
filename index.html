@@ -213,12 +213,55 @@
 
     // 이미 HTML 태그(예: <img>, <div>, <br>)가 포함된 본문(신규 작성분)은 DOMPurify로
     // 살균 후 그대로 렌더링하고, 순수 텍스트(과거 데이터 호환용)는 기존처럼 escape 처리
+    // 화면에 보여줄 때만 적용: 글자로만 적힌 http(s):// 주소를 링크로 바꾸고,
+    // 모든 링크를 새 탭에서 열리게 설정 (저장되는 데이터는 건드리지 않음)
+    function linkify(html) {
+      const tpl = document.createElement('template');
+      tpl.innerHTML = html;
+
+      // 1) 이미 <a> 안에 있지 않은 텍스트 속 URL을 <a>로 변환
+      const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
+      const textNodes = [];
+      while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+      const urlRe = /https?:\/\/[^\s<>"']+/g;
+      textNodes.forEach((node) => {
+        if (node.parentElement && node.parentElement.closest('a')) return;
+        const text = node.nodeValue;
+        urlRe.lastIndex = 0;
+        if (!urlRe.test(text)) return;
+        urlRe.lastIndex = 0;
+
+        const frag = document.createDocumentFragment();
+        let last = 0;
+        let m;
+        while ((m = urlRe.exec(text)) !== null) {
+          frag.append(text.slice(last, m.index));
+          const a = document.createElement('a');
+          a.href = m[0];
+          a.textContent = m[0];
+          frag.append(a);
+          last = m.index + m[0].length;
+        }
+        frag.append(text.slice(last));
+        node.replaceWith(frag);
+      });
+
+      // 2) 모든 링크를 새 탭에서 열기
+      tpl.content.querySelectorAll('a[href]').forEach((a) => {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      });
+
+      return tpl.innerHTML;
+    }
+
     function formatBody(str) {
       if (!str) return '';
       if (/<[a-z][\s\S]*>/i.test(str)) {
-        return DOMPurify.sanitize(str);
+        return linkify(DOMPurify.sanitize(str));
       }
-      return escapeHtml(str).replace(/\n/g, '<br>');
+      return linkify(escapeHtml(str).replace(/\n/g, '<br>'));
     }
 
     // 업로드 전 이미지를 캔버스로 리사이즈/압축 (최대 변 길이 maxDimension, JPEG 품질 quality)
